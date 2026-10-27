@@ -1,3 +1,4 @@
+```yaml
 name: Deploy Food Ordering App
 
 on:
@@ -16,27 +17,46 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Step 1: Download source code
       - name: Checkout source code
         uses: actions/checkout@v4
 
+      # Step 2: Display workflow context for OIDC troubleshooting
+      - name: Check GitHub workflow context
+        run: |
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Branch reference: $GITHUB_REF"
+          echo "Event: $GITHUB_EVENT_NAME"
+          echo "Workflow: $GITHUB_WORKFLOW"
+
+      # Step 3: Configure AWS credentials using GitHub OIDC
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
+          audience: sts.amazonaws.com
 
+      # Step 4: Verify AWS authentication
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      # Step 5: Set up Node.js
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
 
+      # Step 6: Install dependencies
       - name: Install dependencies
         run: npm ci
 
+      # Step 7: Validate backend syntax
       - name: Validate backend syntax
         run: node --check server.js
 
+      # Step 8: Create deployment package
       - name: Create deployment package
         run: |
           zip -r food-ordering-app.zip \
@@ -45,22 +65,49 @@ jobs:
             package-lock.json \
             public
 
+      # Step 9: Upload package to S3
       - name: Upload package to S3
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
         run: |
-          aws s3 cp food-ordering-app.zip \
-            "s3://elasticbeanstalk-${{ vars.AWS_REGION }}-${{ secrets.AWS_ACCOUNT_ID }}/food-ordering/${{ github.sha }}.zip"
+          S3_BUCKET="elasticbeanstalk-${AWS_REGION}-${AWS_ACCOUNT_ID}"
+          S3_KEY="food-ordering/${GITHUB_SHA}.zip"
 
+          aws s3 cp food-ordering-app.zip \
+            "s3://${S3_BUCKET}/${S3_KEY}"
+
+          echo "S3_BUCKET=${S3_BUCKET}" >> "$GITHUB_ENV"
+          echo "S3_KEY=${S3_KEY}" >> "$GITHUB_ENV"
+
+      # Step 10: Create Elastic Beanstalk application version
       - name: Create Elastic Beanstalk application version
+        env:
+          EB_APPLICATION_NAME: ${{ vars.EB_APPLICATION_NAME }}
         run: |
           aws elasticbeanstalk create-application-version \
-            --application-name "${{ vars.EB_APPLICATION_NAME }}" \
-            --version-label "food-ordering-${{ github.sha }}" \
-            --source-bundle S3Bucket="elasticbeanstalk-${{ vars.AWS_REGION }}-${{ secrets.AWS_ACCOUNT_ID }}",S3Key="food-ordering/${{ github.sha }}.zip" \
+            --application-name "${EB_APPLICATION_NAME}" \
+            --version-label "food-ordering-${GITHUB_SHA}" \
+            --source-bundle \
+              S3Bucket="${S3_BUCKET}",S3Key="${S3_KEY}" \
             --process
 
+      # Step 11: Deploy the new application version
       - name: Deploy to Elastic Beanstalk
+        env:
+          EB_APPLICATION_NAME: ${{ vars.EB_APPLICATION_NAME }}
+          EB_ENVIRONMENT_NAME: ${{ vars.EB_ENVIRONMENT_NAME }}
         run: |
           aws elasticbeanstalk update-environment \
-            --application-name "${{ vars.EB_APPLICATION_NAME }}" \
-            --environment-name "${{ vars.EB_ENVIRONMENT_NAME }}" \
-            --version-label "food-ordering-${{ github.sha }}"
+            --application-name "${EB_APPLICATION_NAME}" \
+            --environment-name "${EB_ENVIRONMENT_NAME}" \
+            --version-label "food-ordering-${GITHUB_SHA}"
+
+      # Step 12: Report deployment initiation
+      - name: Report deployment
+        run: |
+          echo "Deployment initiated successfully."
+          echo "Application: ${{ vars.EB_APPLICATION_NAME }}"
+          echo "Environment: ${{ vars.EB_ENVIRONMENT_NAME }}"
+          echo "Version: food-ordering-${GITHUB_SHA}"
+```
