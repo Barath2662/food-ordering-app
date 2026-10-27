@@ -21,15 +21,7 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
-      # Step 2: Display workflow context for OIDC troubleshooting
-      - name: Check GitHub workflow context
-        run: |
-          echo "Repository: $GITHUB_REPOSITORY"
-          echo "Branch reference: $GITHUB_REF"
-          echo "Event: $GITHUB_EVENT_NAME"
-          echo "Workflow: $GITHUB_WORKFLOW"
-
-      # Step 3: Configure AWS credentials using GitHub OIDC
+      # Step 2: Authenticate with AWS using GitHub OIDC
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -37,26 +29,26 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      # Step 4: Verify AWS authentication
+      # Step 3: Verify AWS authentication
       - name: Verify AWS identity
         run: aws sts get-caller-identity
 
-      # Step 5: Set up Node.js
+      # Step 4: Set up Node.js
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
 
-      # Step 6: Install dependencies
+      # Step 5: Install dependencies
       - name: Install dependencies
         run: npm ci
 
-      # Step 7: Validate backend syntax
+      # Step 6: Validate the Node.js backend
       - name: Validate backend syntax
         run: node --check server.js
 
-      # Step 8: Create deployment package
+      # Step 7: Create deployment package
       - name: Create deployment package
         run: |
           zip -r food-ordering-app.zip \
@@ -65,48 +57,37 @@ jobs:
             package-lock.json \
             public
 
-      # Step 9: Upload package to S3
+      # Step 8: Upload package to the Elastic Beanstalk S3 bucket
       - name: Upload package to S3
         env:
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-          AWS_REGION: ${{ vars.AWS_REGION }}
         run: |
-          S3_BUCKET="elasticbeanstalk-${AWS_REGION}-${AWS_ACCOUNT_ID}"
-          S3_KEY="food-ordering/${GITHUB_SHA}.zip"
-
           aws s3 cp food-ordering-app.zip \
-            "s3://${S3_BUCKET}/${S3_KEY}"
+            "s3://elasticbeanstalk-${AWS_REGION}-${AWS_ACCOUNT_ID}/food-ordering/${GITHUB_SHA}.zip"
 
-          echo "S3_BUCKET=${S3_BUCKET}" >> "$GITHUB_ENV"
-          echo "S3_KEY=${S3_KEY}" >> "$GITHUB_ENV"
-
-      # Step 10: Create Elastic Beanstalk application version
+      # Step 9: Register a new application version
       - name: Create Elastic Beanstalk application version
         env:
-          EB_APPLICATION_NAME: ${{ vars.EB_APPLICATION_NAME }}
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
         run: |
           aws elasticbeanstalk create-application-version \
-            --application-name "${EB_APPLICATION_NAME}" \
+            --application-name "${{ vars.EB_APPLICATION_NAME }}" \
             --version-label "food-ordering-${GITHUB_SHA}" \
             --source-bundle \
-              S3Bucket="${S3_BUCKET}",S3Key="${S3_KEY}" \
+              S3Bucket="elasticbeanstalk-${AWS_REGION}-${AWS_ACCOUNT_ID}",S3Key="food-ordering/${GITHUB_SHA}.zip" \
             --process
 
-      # Step 11: Deploy the new application version
+      # Step 10: Deploy to Elastic Beanstalk
       - name: Deploy to Elastic Beanstalk
-        env:
-          EB_APPLICATION_NAME: ${{ vars.EB_APPLICATION_NAME }}
-          EB_ENVIRONMENT_NAME: ${{ vars.EB_ENVIRONMENT_NAME }}
         run: |
           aws elasticbeanstalk update-environment \
-            --application-name "${EB_APPLICATION_NAME}" \
-            --environment-name "${EB_ENVIRONMENT_NAME}" \
+            --application-name "${{ vars.EB_APPLICATION_NAME }}" \
+            --environment-name "${{ vars.EB_ENVIRONMENT_NAME }}" \
             --version-label "food-ordering-${GITHUB_SHA}"
 
-      # Step 12: Report deployment initiation
+      # Step 11: Report successful deployment request
       - name: Report deployment
         run: |
-          echo "Deployment initiated successfully."
+          echo "Deployment request submitted successfully."
           echo "Application: ${{ vars.EB_APPLICATION_NAME }}"
           echo "Environment: ${{ vars.EB_ENVIRONMENT_NAME }}"
-          echo "Version: food-ordering-${GITHUB_SHA}"
