@@ -1,4 +1,4 @@
-```yaml
+
 name: Deploy Food Ordering App
 
 on:
@@ -110,4 +110,3 @@ jobs:
           echo "Application: ${{ vars.EB_APPLICATION_NAME }}"
           echo "Environment: ${{ vars.EB_ENVIRONMENT_NAME }}"
           echo "Version: food-ordering-${GITHUB_SHA}"
-```
