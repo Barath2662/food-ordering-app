@@ -1,251 +1,403 @@
+
+require("dotenv").config();
+
 const express = require("express");
-const sqlite3 = require("sqlite3").verbose();
+const mongoose = require("mongoose");
 const path = require("path");
 
-const app = express();
-const PORT = process.env.PORT || 8080;
+const Food = require("./models/Food");
+const Order = require("./models/Order");
 
-app.use(express.json());
+const app = express();
+
+app.use(express.json({ limit: "100kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
-const db = new sqlite3.Database(
-    process.env.DB_PATH || path.join(__dirname, "food.db")
-);
+const PORT = process.env.PORT || 3000;
 
-db.serialize(() => {
-    db.run(`
-        CREATE TABLE IF NOT EXISTS menu (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            category TEXT NOT NULL,
-            price REAL NOT NULL CHECK(price >= 0),
-            available INTEGER NOT NULL DEFAULT 1
-        )
-    `);
+// Database connection
+async function connectDatabase() {
+  if (!process.env.MONGODB_URI) {
+    throw new Error("MONGODB_URI environment variable is missing");
+  }
 
-    db.run(`
-        CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            customer_name TEXT NOT NULL,
-            dish_name TEXT NOT NULL,
-            quantity INTEGER NOT NULL CHECK(quantity > 0),
-            total REAL NOT NULL CHECK(total >= 0),
-            status TEXT NOT NULL DEFAULT 'Pending'
-        )
-    `);
+  await mongoose.connect(process.env.MONGODB_URI, {
+    serverSelectionTimeoutMS: 10000
+  });
 
-    db.get("SELECT COUNT(*) AS count FROM menu", (err, row) => {
-        if (err) {
-            console.error(err);
-            return;
-        }
+  console.log("Connected to MongoDB Atlas");
+}
 
-        if (row.count === 0) {
-            const stmt = db.prepare(`
-                INSERT INTO menu (name, category, price, available)
-                VALUES (?, ?, ?, ?)
-            `);
-
-            stmt.run("Veg Burger", "Fast Food", 120, 1);
-            stmt.run("Pizza", "Italian", 250, 1);
-            stmt.run("Fried Rice", "Chinese", 180, 1);
-
-            stmt.finalize();
-        }
-    });
+// Health check
+app.get("/api/health", (req, res) => {
+  res.json({
+    status: "OK",
+    database: mongoose.connection.readyState === 1
+      ? "Connected"
+      : "Disconnected"
+  });
 });
 
-// Get all dishes
-app.get("/api/menu", (req, res) => {
-    db.all("SELECT * FROM menu ORDER BY id DESC", (err, rows) => {
-        if (err) return res.status(500).json({ error: "Database error" });
-        res.json(rows);
-    });
+// ================= FOOD CRUD =================
+
+// Display all food items
+app.get("/api/foods", async (req, res) => {
+  try {
+    const foods = await Food.find().sort({ createdAt: -1 });
+    res.json(foods);
+  } catch (error) {
+    console.error("Fetch foods error:", error);
+    res.status(500).json({ error: "Failed to fetch food items" });
+  }
 });
 
-// Add a dish
-app.post("/api/menu", (req, res) => {
-    const { name, category, price, available = 1 } = req.body;
-
-    if (
-        typeof name !== "string" || !name.trim() ||
-        typeof category !== "string" || !category.trim() ||
-        !Number.isFinite(price) || price < 0 ||
-        ![0, 1].includes(available)
-    ) {
-        return res.status(400).json({ error: "Invalid dish details" });
+// Get a single food item
+app.get("/api/foods/:id", async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ error: "Invalid food ID" });
     }
 
-    db.run(
-        `INSERT INTO menu (name, category, price, available)
-         VALUES (?, ?, ?, ?)`,
-        [name.trim(), category.trim(), price, available],
-        function (err) {
-            if (err) return res.status(500).json({ error: "Insert failed" });
+    const food = await Food.findById(req.params.id);
 
-            res.status(201).json({
-                id: this.lastID,
-                name: name.trim(),
-                category: category.trim(),
-                price,
-                available
-            });
-        }
-    );
-});
-
-// Update a dish
-app.put("/api/menu/:id", (req, res) => {
-    const { name, category, price, available } = req.body;
-
-    if (
-        typeof name !== "string" || !name.trim() ||
-        typeof category !== "string" || !category.trim() ||
-        !Number.isFinite(price) || price < 0 ||
-        ![0, 1].includes(available)
-    ) {
-        return res.status(400).json({ error: "Invalid dish details" });
+    if (!food) {
+      return res.status(404).json({ error: "Food item not found" });
     }
 
-    db.run(
-        `UPDATE menu
-         SET name = ?, category = ?, price = ?, available = ?
-         WHERE id = ?`,
-        [name.trim(), category.trim(), price, available, req.params.id],
-        function (err) {
-            if (err) return res.status(500).json({ error: "Update failed" });
+    res.json(food);
+  } catch (error) {
+    console.error("Get food error:", error);
+    res.status(500).json({ error: "Failed to fetch food item" });
+  }
+});
 
-            if (this.changes === 0) {
-                return res.status(404).json({ error: "Dish not found" });
-            }
+// Add a new dish
+app.post("/api/foods", async (req, res) => {
+  try {
+    const { name, description, category, price, image, available } = req.body;
 
-            res.json({ message: "Dish updated successfully" });
-        }
+    if (
+      typeof name !== "string" ||
+      !name.trim() ||
+      typeof category !== "string" ||
+      !category.trim() ||
+      price === undefined ||
+      price === null ||
+      price === "" ||
+      !Number.isFinite(Number(price)) ||
+      Number(price) < 0
+    ) {
+      return res.status(400).json({
+        error: "Valid name, category and non-negative price are required"
+      });
+    }
+
+    const food = await Food.create({
+      name: name.trim(),
+      description,
+      category: category.trim(),
+      price: Number(price),
+      image,
+      available: available === undefined ? true : available
+    });
+
+    res.status(201).json(food);
+  } catch (error) {
+    console.error("Create food error:", error);
+
+    if (error.name === "ValidationError") {
+      return res.status(400).json({ error: error.message });
+    }
+
+    res.status(500).json({ error: "Failed to add food item" });
+  }
+});
+
+// Update food details
+app.put("/api/foods/:id", async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ error: "Invalid food ID" });
+    }
+
+    const allowedFields = [
+      "name",
+      "description",
+      "category",
+      "price",
+      "image",
+      "available"
+    ];
+
+    const updates = {};
+
+    for (const field of allowedFields) {
+      if (Object.prototype.hasOwnProperty.call(req.body, field)) {
+        updates[field] = req.body[field];
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: "No valid fields provided" });
+    }
+
+    if ("name" in updates &&
+        (typeof updates.name !== "string" || !updates.name.trim())) {
+      return res.status(400).json({ error: "Name cannot be empty" });
+    }
+
+    if ("category" in updates &&
+        (typeof updates.category !== "string" || !updates.category.trim())) {
+      return res.status(400).json({ error: "Category cannot be empty" });
+    }
+
+    if ("price" in updates &&
+        (!Number.isFinite(Number(updates.price)) ||
+         updates.price === "" ||
+         Number(updates.price) < 0)) {
+      return res.status(400).json({ error: "Price must be non-negative" });
+    }
+
+    if ("price" in updates) {
+      updates.price = Number(updates.price);
+    }
+
+    if ("name" in updates) updates.name = updates.name.trim();
+    if ("category" in updates) updates.category = updates.category.trim();
+
+    const food = await Food.findByIdAndUpdate(
+      req.params.id,
+      updates,
+      {
+        new: true,
+        runValidators: true
+      }
     );
+
+    if (!food) {
+      return res.status(404).json({ error: "Food item not found" });
+    }
+
+    res.json(food);
+  } catch (error) {
+    console.error("Update food error:", error);
+
+    if (error.name === "ValidationError" || error.name === "CastError") {
+      return res.status(400).json({ error: error.message });
+    }
+
+    res.status(500).json({ error: "Failed to update food item" });
+  }
 });
 
 // Delete a dish
-app.delete("/api/menu/:id", (req, res) => {
-    db.run(
-        "DELETE FROM menu WHERE id = ?",
-        [req.params.id],
-        function (err) {
-            if (err) return res.status(500).json({ error: "Delete failed" });
+app.delete("/api/foods/:id", async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ error: "Invalid food ID" });
+    }
 
-            if (this.changes === 0) {
-                return res.status(404).json({ error: "Dish not found" });
-            }
+    const food = await Food.findByIdAndDelete(req.params.id);
 
-            res.json({ message: "Dish deleted successfully" });
-        }
-    );
+    if (!food) {
+      return res.status(404).json({ error: "Food item not found" });
+    }
+
+    res.json({ message: "Food item deleted successfully" });
+  } catch (error) {
+    console.error("Delete food error:", error);
+    res.status(500).json({ error: "Failed to delete food item" });
+  }
 });
 
-// Get all customer orders
-app.get("/api/orders", (req, res) => {
-    db.all("SELECT * FROM orders ORDER BY id DESC", (err, rows) => {
-        if (err) return res.status(500).json({ error: "Database error" });
-        res.json(rows);
-    });
+// ================= CUSTOMER ORDERS =================
+
+// Display all orders
+app.get("/api/orders", async (req, res) => {
+  try {
+    const orders = await Order.find().sort({ createdAt: -1 });
+    res.json(orders);
+  } catch (error) {
+    console.error("Fetch orders error:", error);
+    res.status(500).json({ error: "Failed to fetch orders" });
+  }
 });
 
 // Create a customer order
-app.post("/api/orders", (req, res) => {
-    const { customer_name, dish_id, quantity } = req.body;
+app.post("/api/orders", async (req, res) => {
+  try {
+    const { customerName, phone, address, items } = req.body;
 
     if (
-        typeof customer_name !== "string" ||
-        !customer_name.trim() ||
-        !Number.isInteger(dish_id) ||
-        !Number.isInteger(quantity) ||
-        quantity < 1 ||
-        quantity > 100
+      typeof customerName !== "string" ||
+      !customerName.trim() ||
+      typeof phone !== "string" ||
+      !phone.trim() ||
+      typeof address !== "string" ||
+      !address.trim() ||
+      !Array.isArray(items) ||
+      items.length === 0
     ) {
-        return res.status(400).json({ error: "Invalid order details" });
+      return res.status(400).json({
+        error: "Customer name, phone, address and order items are required"
+      });
     }
 
-    db.get(
-        "SELECT * FROM menu WHERE id = ? AND available = 1",
-        [dish_id],
-        (err, dish) => {
-            if (err) return res.status(500).json({ error: "Database error" });
-            if (!dish) {
-                return res.status(404).json({ error: "Dish unavailable" });
-            }
+    if (items.length > 50) {
+      return res.status(400).json({ error: "Too many items in one order" });
+    }
 
-            const total = Number((dish.price * quantity).toFixed(2));
+    const quantities = new Map();
 
-            db.run(
-                `INSERT INTO orders
-                 (customer_name, dish_name, quantity, total, status)
-                 VALUES (?, ?, ?, ?, 'Pending')`,
-                [customer_name.trim(), dish.name, quantity, total],
-                function (insertErr) {
-                    if (insertErr) {
-                        return res.status(500).json({ error: "Order creation failed" });
-                    }
+    for (const item of items) {
+      if (
+        !item ||
+        !mongoose.isValidObjectId(item.foodId) ||
+        !Number.isSafeInteger(item.quantity) ||
+        item.quantity < 1 ||
+        item.quantity > 100
+      ) {
+        return res.status(400).json({
+          error: "Each item needs a valid foodId and quantity between 1 and 100"
+        });
+      }
 
-                    res.status(201).json({
-                        id: this.lastID,
-                        customer_name: customer_name.trim(),
-                        dish_name: dish.name,
-                        quantity,
-                        total,
-                        status: "Pending"
-                    });
-                }
-            );
-        }
+      const key = item.foodId.toString();
+      quantities.set(key, (quantities.get(key) || 0) + item.quantity);
+    }
+
+    const foodIds = [...quantities.keys()];
+    const foods = await Food.find({
+      _id: { $in: foodIds },
+      available: true
+    });
+
+    if (foods.length !== foodIds.length) {
+      return res.status(400).json({
+        error: "One or more food items are unavailable or do not exist"
+      });
+    }
+
+    const foodMap = new Map(foods.map(food => [food._id.toString(), food]));
+
+    const orderItems = foodIds.map(foodId => {
+      const food = foodMap.get(foodId);
+
+      return {
+        foodId: food._id,
+        name: food.name,
+        price: food.price,
+        quantity: quantities.get(foodId)
+      };
+    });
+
+    const totalAmount = orderItems.reduce(
+      (sum, item) => sum + item.price * item.quantity,
+      0
     );
+
+    const order = await Order.create({
+      customerName: customerName.trim(),
+      phone: phone.trim(),
+      address: address.trim(),
+      items: orderItems,
+      totalAmount
+    });
+
+    res.status(201).json(order);
+  } catch (error) {
+    console.error("Create order error:", error);
+
+    if (error.name === "ValidationError") {
+      return res.status(400).json({ error: error.message });
+    }
+
+    res.status(500).json({ error: "Failed to create order" });
+  }
 });
 
-// Update an order's status
-app.patch("/api/orders/:id", (req, res) => {
+// Update order status
+app.patch("/api/orders/:id/status", async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ error: "Invalid order ID" });
+    }
+
     const allowedStatuses = [
-        "Pending",
-        "Preparing",
-        "Delivered",
-        "Cancelled"
+      "Pending",
+      "Preparing",
+      "Out for Delivery",
+      "Delivered",
+      "Cancelled"
     ];
 
     const { status } = req.body;
 
     if (!allowedStatuses.includes(status)) {
-        return res.status(400).json({ error: "Invalid order status" });
+      return res.status(400).json({ error: "Invalid order status" });
     }
 
-    db.run(
-        "UPDATE orders SET status = ? WHERE id = ?",
-        [status, req.params.id],
-        function (err) {
-            if (err) return res.status(500).json({ error: "Update failed" });
-
-            if (this.changes === 0) {
-                return res.status(404).json({ error: "Order not found" });
-            }
-
-            res.json({ message: "Order status updated successfully" });
-        }
+    const order = await Order.findByIdAndUpdate(
+      req.params.id,
+      { status },
+      { new: true, runValidators: true }
     );
+
+    if (!order) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+
+    res.json(order);
+  } catch (error) {
+    console.error("Update order error:", error);
+    res.status(500).json({ error: "Failed to update order status" });
+  }
 });
 
 // Delete an order
-app.delete("/api/orders/:id", (req, res) => {
-    db.run(
-        "DELETE FROM orders WHERE id = ?",
-        [req.params.id],
-        function (err) {
-            if (err) return res.status(500).json({ error: "Delete failed" });
+app.delete("/api/orders/:id", async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ error: "Invalid order ID" });
+    }
 
-            if (this.changes === 0) {
-                return res.status(404).json({ error: "Order not found" });
-            }
+    const order = await Order.findByIdAndDelete(req.params.id);
 
-            res.json({ message: "Order deleted successfully" });
-        }
-    );
+    if (!order) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+
+    res.json({ message: "Order deleted successfully" });
+  } catch (error) {
+    console.error("Delete order error:", error);
+    res.status(500).json({ error: "Failed to delete order" });
+  }
 });
 
-app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Food ordering application running on port ${PORT}`);
-});
+// Start server only after database connection succeeds
+async function startServer() {
+  try {
+    await connectDatabase();
+
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Food Ordering App running on port ${PORT}`);
+    });
+  } catch (error) {
+    console.error("Failed to start application:", error.message);
+    process.exit(1);
+  }
+}
+
+async function connectDatabase() {
+  if (!process.env.MONGODB_URI) {
+    throw new Error("MONGODB_URI environment variable is missing");
+  }
+
+  await mongoose.connect(process.env.MONGODB_URI, {
+    serverSelectionTimeoutMS: 10000
+  });
+
+  console.log("Connected to MongoDB Atlas");
+}
+
+startServer();

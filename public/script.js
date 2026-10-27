@@ -1,262 +1,315 @@
-const menuList = document.getElementById("menuList");
-const ordersList = document.getElementById("ordersList");
-const dishForm = document.getElementById("dishForm");
+
+const foodForm = document.getElementById("foodForm");
+const foodList = document.getElementById("foodList");
 const orderForm = document.getElementById("orderForm");
+const orderFood = document.getElementById("orderFood");
+const orderList = document.getElementById("orderList");
+
+let foods = [];
 
 async function api(url, options = {}) {
-    const response = await fetch(url, {
-        ...options,
-        headers: {
-            "Content-Type": "application/json",
-            ...options.headers
-        }
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...options.headers
+    }
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || `Request failed (${response.status})`);
+  }
+
+  return data;
+}
+
+function showMessage(id, message, success = true) {
+  const element = document.getElementById(id);
+  element.textContent = message;
+  element.className = success ? "message-success" : "message-error";
+}
+
+function makeElement(tag, text, className) {
+  const element = document.createElement(tag);
+  element.textContent = text;
+
+  if (className) {
+    element.className = className;
+  }
+
+  return element;
+}
+
+async function checkConnection() {
+  const status = document.getElementById("connectionStatus");
+
+  try {
+    const result = await api("/api/health");
+    status.textContent = `Application: ${result.status} | Database: ${result.database}`;
+  } catch {
+    status.textContent = "Unable to check database connection";
+  }
+}
+
+async function loadFoods() {
+  try {
+    foods = await api("/api/foods");
+    renderFoods();
+    renderFoodOptions();
+  } catch (error) {
+    foodList.textContent = error.message;
+  }
+}
+
+function renderFoods() {
+  foodList.replaceChildren();
+
+  if (foods.length === 0) {
+    foodList.textContent = "No food items yet. Add your first dish above.";
+    return;
+  }
+
+  foods.forEach(food => {
+    const card = makeElement("article", "", "food-item");
+
+    if (food.image) {
+      const image = document.createElement("img");
+      image.src = food.image;
+      image.alt = food.name;
+      image.loading = "lazy";
+      image.referrerPolicy = "no-referrer";
+      image.addEventListener("error", () => image.remove());
+      card.appendChild(image);
+    }
+
+    card.appendChild(makeElement("h3", food.name));
+    card.appendChild(makeElement("p", food.description || "No description"));
+    card.appendChild(makeElement("p", `Category: ${food.category}`));
+    card.appendChild(makeElement("p", `Price: ₹${Number(food.price).toFixed(2)}`));
+    card.appendChild(
+      makeElement("p", food.available ? "Available" : "Unavailable")
+    );
+
+    const editButton = makeElement("button", "Edit");
+    editButton.type = "button";
+    editButton.addEventListener("click", () => editFood(food));
+
+    const deleteButton = makeElement("button", "Delete", "danger");
+    deleteButton.type = "button";
+    deleteButton.addEventListener("click", () => deleteFood(food._id));
+
+    card.append(editButton, deleteButton);
+    foodList.appendChild(card);
+  });
+}
+
+function renderFoodOptions() {
+  const previousValue = orderFood.value;
+  orderFood.replaceChildren();
+
+  const placeholder = makeElement("option", "Select food");
+  placeholder.value = "";
+  orderFood.appendChild(placeholder);
+
+  foods.filter(food => food.available).forEach(food => {
+    const option = makeElement(
+      "option",
+      `${food.name} — ₹${Number(food.price).toFixed(2)}`
+    );
+
+    option.value = food._id;
+    orderFood.appendChild(option);
+  });
+
+  if (foods.some(food => food._id === previousValue && food.available)) {
+    orderFood.value = previousValue;
+  }
+}
+
+foodForm.addEventListener("submit", async event => {
+  event.preventDefault();
+
+  const id = document.getElementById("foodId").value;
+
+  const food = {
+    name: document.getElementById("name").value.trim(),
+    category: document.getElementById("category").value.trim(),
+    price: Number(document.getElementById("price").value),
+    description: document.getElementById("description").value.trim(),
+    image: document.getElementById("image").value.trim(),
+    available: document.getElementById("available").checked
+  };
+
+  try {
+    await api(id ? `/api/foods/${id}` : "/api/foods", {
+      method: id ? "PUT" : "POST",
+      body: JSON.stringify(food)
     });
 
-    const data = await response.json();
+    foodForm.reset();
+    document.getElementById("foodId").value = "";
+    document.getElementById("formTitle").textContent = "Add Food Item";
+    document.getElementById("saveButton").textContent = "Add Food";
+    document.getElementById("cancelEdit").hidden = true;
+    document.getElementById("available").checked = true;
 
-    if (!response.ok) {
-        throw new Error(data.error || "Request failed");
-    }
-
-    return data;
-}
-
-function escapeHTML(value) {
-    return String(value).replace(/[&<>"']/g, char => ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#39;"
-    })[char]);
-}
-
-async function loadMenu() {
-    try {
-        const dishes = await api("/api/menu");
-
-        menuList.innerHTML = "";
-        const orderDish = document.getElementById("orderDish");
-
-        orderDish.innerHTML = "";
-
-        dishes.forEach(dish => {
-            const item = document.createElement("div");
-            item.className = "item";
-
-            item.innerHTML = `
-                <div>
-                    <strong>${escapeHTML(dish.name)}</strong>
-                    <p>${escapeHTML(dish.category)} -
-                       ₹${Number(dish.price).toFixed(2)}</p>
-                    <p>${dish.available ? "Available" : "Unavailable"}</p>
-                </div>
-
-                <div>
-                    <button data-action="edit" data-id="${dish.id}">
-                        Edit
-                    </button>
-                    <button data-action="delete" data-id="${dish.id}">
-                        Delete
-                    </button>
-                </div>
-            `;
-
-            menuList.appendChild(item);
-
-            if (dish.available) {
-                const option = document.createElement("option");
-                option.value = dish.id;
-                option.textContent =
-                    `${dish.name} - ₹${Number(dish.price).toFixed(2)}`;
-
-                orderDish.appendChild(option);
-            }
-        });
-
-        if (orderDish.options.length === 0) {
-            const option = document.createElement("option");
-            option.value = "";
-            option.textContent = "No dishes available";
-            orderDish.appendChild(option);
-        }
-    } catch (error) {
-        alert(error.message);
-    }
-}
-
-dishForm.addEventListener("submit", async event => {
-    event.preventDefault();
-
-    const id = document.getElementById("dishId").value;
-
-    const dish = {
-        name: document.getElementById("dishName").value.trim(),
-        category: document.getElementById("category").value.trim(),
-        price: Number(document.getElementById("price").value),
-        available: Number(document.getElementById("available").value)
-    };
-
-    try {
-        await api(id ? `/api/menu/${id}` : "/api/menu", {
-            method: id ? "PUT" : "POST",
-            body: JSON.stringify(dish)
-        });
-
-        dishForm.reset();
-        document.getElementById("dishId").value = "";
-
-        await loadMenu();
-        alert("Dish saved successfully");
-    } catch (error) {
-        alert(error.message);
-    }
+    showMessage("foodMessage", id ? "Food updated successfully" : "Food added successfully");
+    await loadFoods();
+  } catch (error) {
+    showMessage("foodMessage", error.message, false);
+  }
 });
+
+function editFood(food) {
+  document.getElementById("foodId").value = food._id;
+  document.getElementById("name").value = food.name;
+  document.getElementById("category").value = food.category;
+  document.getElementById("price").value = food.price;
+  document.getElementById("description").value = food.description || "";
+  document.getElementById("image").value = food.image || "";
+  document.getElementById("available").checked = food.available;
+
+  document.getElementById("formTitle").textContent = "Update Food Item";
+  document.getElementById("saveButton").textContent = "Update Food";
+  document.getElementById("cancelEdit").hidden = false;
+
+  foodForm.scrollIntoView({ behavior: "smooth" });
+}
 
 document.getElementById("cancelEdit").addEventListener("click", () => {
-    dishForm.reset();
-    document.getElementById("dishId").value = "";
+  foodForm.reset();
+  document.getElementById("foodId").value = "";
+  document.getElementById("formTitle").textContent = "Add Food Item";
+  document.getElementById("saveButton").textContent = "Add Food";
+  document.getElementById("cancelEdit").hidden = true;
+  document.getElementById("available").checked = true;
 });
 
-menuList.addEventListener("click", async event => {
-    const button = event.target.closest("button[data-action]");
+async function deleteFood(id) {
+  if (!confirm("Delete this food item?")) {
+    return;
+  }
 
-    if (!button) return;
-
-    const id = button.dataset.id;
-    const action = button.dataset.action;
-
-    try {
-        if (action === "edit") {
-            const dishes = await api("/api/menu");
-            const dish = dishes.find(item => item.id === Number(id));
-
-            if (!dish) throw new Error("Dish not found");
-
-            document.getElementById("dishId").value = dish.id;
-            document.getElementById("dishName").value = dish.name;
-            document.getElementById("category").value = dish.category;
-            document.getElementById("price").value = dish.price;
-            document.getElementById("available").value = dish.available;
-
-            document.getElementById("dishName").focus();
-        }
-
-        if (action === "delete") {
-            if (!confirm("Delete this dish?")) return;
-
-            await api(`/api/menu/${id}`, {
-                method: "DELETE"
-            });
-
-            await loadMenu();
-            alert("Dish deleted successfully");
-        }
-    } catch (error) {
-        alert(error.message);
-    }
-});
+  try {
+    await api(`/api/foods/${id}`, { method: "DELETE" });
+    showMessage("foodMessage", "Food item deleted successfully");
+    await loadFoods();
+  } catch (error) {
+    showMessage("foodMessage", error.message, false);
+  }
+}
 
 orderForm.addEventListener("submit", async event => {
-    event.preventDefault();
+  event.preventDefault();
 
-    const order = {
-        customer_name: document.getElementById("customerName").value.trim(),
-        dish_id: Number(document.getElementById("orderDish").value),
-        quantity: Number(document.getElementById("quantity").value)
-    };
+  const item = {
+    foodId: orderFood.value,
+    quantity: Number(document.getElementById("quantity").value)
+  };
 
-    if (!order.dish_id) {
-        alert("Please select an available dish");
-        return;
-    }
+  try {
+    const order = await api("/api/orders", {
+      method: "POST",
+      body: JSON.stringify({
+        customerName: document.getElementById("customerName").value.trim(),
+        phone: document.getElementById("phone").value.trim(),
+        address: document.getElementById("address").value.trim(),
+        items: [item]
+      })
+    });
 
-    try {
-        await api("/api/orders", {
-            method: "POST",
-            body: JSON.stringify(order)
-        });
+    orderForm.reset();
+    document.getElementById("quantity").value = 1;
 
-        orderForm.reset();
+    showMessage(
+      "orderMessage",
+      `Order placed successfully. Order ID: ${order._id}`
+    );
 
-        await loadOrders();
-        alert("Order placed successfully");
-    } catch (error) {
-        alert(error.message);
-    }
+    await loadOrders();
+  } catch (error) {
+    showMessage("orderMessage", error.message, false);
+  }
 });
 
 async function loadOrders() {
-    try {
-        const orders = await api("/api/orders");
+  try {
+    const orders = await api("/api/orders");
+    orderList.replaceChildren();
 
-        ordersList.innerHTML = "";
-
-        orders.forEach(order => {
-            const item = document.createElement("div");
-            item.className = "item";
-
-            const statusSelect = document.createElement("select");
-
-            ["Pending", "Preparing", "Delivered", "Cancelled"]
-                .forEach(status => {
-                    const option = document.createElement("option");
-                    option.value = status;
-                    option.textContent = status;
-                    option.selected = order.status === status;
-                    statusSelect.appendChild(option);
-                });
-
-            statusSelect.addEventListener("change", async () => {
-                try {
-                    await api(`/api/orders/${order.id}`, {
-                        method: "PATCH",
-                        body: JSON.stringify({
-                            status: statusSelect.value
-                        })
-                    });
-
-                    await loadOrders();
-                } catch (error) {
-                    alert(error.message);
-                    await loadOrders();
-                }
-            });
-
-            const details = document.createElement("div");
-
-            details.textContent =
-                `Order #${order.id}: ${order.customer_name} - ` +
-                `${order.dish_name} x ${order.quantity} - ` +
-                `₹${Number(order.total).toFixed(2)} - `;
-
-            item.appendChild(details);
-            item.appendChild(statusSelect);
-
-            const deleteButton = document.createElement("button");
-            deleteButton.textContent = "Delete Order";
-
-            deleteButton.addEventListener("click", async () => {
-                if (!confirm("Delete this order?")) return;
-
-                try {
-                    await api(`/api/orders/${order.id}`, {
-                        method: "DELETE"
-                    });
-
-                    await loadOrders();
-                } catch (error) {
-                    alert(error.message);
-                }
-            });
-
-            item.appendChild(deleteButton);
-            ordersList.appendChild(item);
-        });
-    } catch (error) {
-        alert(error.message);
+    if (orders.length === 0) {
+      orderList.textContent = "No customer orders yet.";
+      return;
     }
+
+    orders.forEach(order => {
+      const card = makeElement("article", "", "order-item");
+
+      card.appendChild(makeElement("h3", `Order ${order._id}`));
+      card.appendChild(makeElement("p", `Customer: ${order.customerName}`));
+      card.appendChild(makeElement("p", `Phone: ${order.phone}`));
+      card.appendChild(makeElement("p", `Address: ${order.address}`));
+      card.appendChild(makeElement("p", `Total: ₹${Number(order.totalAmount).toFixed(2)}`));
+      card.appendChild(makeElement("p", `Items: ${order.items.map(item => `${item.name} × ${item.quantity}`).join(", ")}`));
+      card.appendChild(makeElement("p", `Status: ${order.status}`, "status"));
+
+      const statusSelect = document.createElement("select");
+
+      [
+        "Pending",
+        "Preparing",
+        "Out for Delivery",
+        "Delivered",
+        "Cancelled"
+      ].forEach(status => {
+        const option = makeElement("option", status);
+        option.value = status;
+        option.selected = status === order.status;
+        statusSelect.appendChild(option);
+      });
+
+      const updateButton = makeElement("button", "Update Status");
+      updateButton.type = "button";
+      updateButton.addEventListener("click", async () => {
+        try {
+          await api(`/api/orders/${order._id}/status`, {
+            method: "PATCH",
+            body: JSON.stringify({ status: statusSelect.value })
+          });
+
+          await loadOrders();
+        } catch (error) {
+          alert(error.message);
+        }
+      });
+
+      const deleteButton = makeElement("button", "Delete Order", "danger");
+      deleteButton.type = "button";
+      deleteButton.addEventListener("click", async () => {
+        if (!confirm("Delete this order?")) return;
+
+        try {
+          await api(`/api/orders/${order._id}`, { method: "DELETE" });
+          await loadOrders();
+        } catch (error) {
+          alert(error.message);
+        }
+      });
+
+      card.append(statusSelect, updateButton, deleteButton);
+      orderList.appendChild(card);
+    });
+  } catch (error) {
+    orderList.textContent = error.message;
+  }
 }
 
-loadMenu();
-loadOrders();
+async function initialize() {
+  await checkConnection();
+  await loadFoods();
+  await loadOrders();
+}
+
+initialize();
